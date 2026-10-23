@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CBT Application</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; user-select: none; }
+        .hide-scroll::-webkit-scrollbar { display: none; }
+        .hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+        /* Anti-select */
+        * { -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -o-user-select: none; user-select: none; }
+        input[type="text"], input[type="password"], textarea { -webkit-user-select: text; user-select: text; }
+        
+        .radio-custom:checked + label {
+            background-color: #eff6ff;
+            border-color: #3b82f6;
+        }
+    </style>
+</head>
+<body oncontextmenu="return false;">
+
+    <!-- APP CONTAINER -->
+    <div id="app" class="min-h-screen flex flex-col items-center justify-center bg-gray-100">
+        <i class="fas fa-circle-notch fa-spin text-6xl text-blue-500 mb-4"></i>
+        <h2 class="text-xl font-bold text-gray-700">Memuat Aplikasi...</h2>
+        <p class="text-gray-500 mt-2" id="loadingStatus">Menghubungkan ke server database...</p>
+    </div>
+
+    <!-- GLOBAL MODAL -->
+    <div id="globalModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 text-center transform scale-95 transition-transform duration-300" id="modalContent">
+            <div id="modalIcon" class="text-4xl mb-4 text-blue-500"><i class="fas fa-info-circle"></i></div>
+            <h3 id="modalTitle" class="text-xl font-bold mb-2 text-gray-800">Judul</h3>
+            <p id="modalMsg" class="text-gray-600 mb-6">Pesan</p>
+            <div class="flex justify-center gap-3" id="modalButtons">
+                <button id="modalBtnOk" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // STATE MANAGEMENT
+        // ==========================================
+        const state = {
+            config: {},
+            view: 'login', // login, student, admin, result
+            user: null, // {nama, kelas}
+            questions: [],
+            answers: {},
+            doubts: {},
+            currentQIdx: 0,
+            violations: 0,
+            timer: 0,
+            timerInterval: null
+        };
+
+        // ==========================================
+        // INIT & ANTI-CHEAT
+        // ==========================================
+        window.onload = () => {
+            // Get config from backend
+            google.script.run
+                .withSuccessHandler(res => {
+                    state.config = res;
+                    renderLogin();
+                })
+                .withFailureHandler(err => {
+                    document.getElementById('loadingStatus').innerHTML = `<span class="text-red-500 font-bold">Error: ${err.message}</span>`;
+                    showModal("Koneksi Gagal", "Gagal memuat aplikasi. Pastikan link yang dibuka benar dan izin akses telah disetel ke 'Semua Orang'.", "error");
+                })
+                .getConfig();
+
+            // Anti-cheat: Visibility & Keyboard
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden && state.view === 'student') {
+                    state.violations++;
+                    showModal("PERINGATAN!", `Anda terdeteksi berpindah tab/jendela. Pelanggaran tercatat: ${state.violations} kali. Ujian dapat dibatalkan jika terus melanggar.`, "warning");
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if(e.key === 'F12' || (e.ctrlKey && e.shiftKey && e.key === 'I')) {
+                    e.preventDefault();
+                    if(state.view === 'student') {
+                        state.violations++;
+                        showModal("Akses Ditolak", "Fitur ini dinonaktifkan selama ujian.", "error");
+                    }
+                }
+            });
+        };
+
+        // ==========================================
+        // UI COMPONENTS & RENDERERS
+        // ==========================================
+        function renderLogin() {
+            state.view = 'login';
+            const html = `
+                <div class="flex-grow flex items-center justify-center p-4">
+                    <div class="bg-white rounded-2xl shadow-xl w-full max-w-4xl flex flex-col md:flex-row overflow-hidden">
+                        <div class="bg-blue-600 p-8 text-white flex flex-col justify-center items-center md:w-5/12">
+                            <i class="fas fa-graduation-cap text-6xl mb-4"></i>
+                            <h1 class="text-2xl font-bold text-center mb-2">${state.config.judul || 'CBT System'}</h1>
+                            <p class="text-blue-100 text-center">${state.config.sekolah || ''}</p>
+                            <p class="mt-8 text-sm opacity-80 text-center"><i class="fas fa-clock mr-2"></i>Durasi: ${state.config.durasi_menit || 90} Menit</p>
+                        </div>
+                        <div class="p-8 md:w-7/12">
+                            <div class="flex border-b mb-6">
+                                <button onclick="switchLoginTab('siswa')" id="tabSiswa" class="w-1/2 py-3 text-center border-b-2 border-blue-600 font-bold text-blue-600">Login Siswa</button>
+                                <button onclick="switchLoginTab('admin')" id="tabAdmin" class="w-1/2 py-3 text-center border-b-2 border-transparent font-medium text-gray-500">Guru / Admin</button>
+                            </div>
+                            
+                            <!-- Form Siswa -->
+                            <div id="formSiswa">
+                                <div class="mb-4">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">Nama Lengkap</label>
+                                    <input type="text" id="loginNama" class="w-full px-4 py-3 rounded-lg bg-gray-100 border-transparent focus:border-blue-500 focus:bg-white focus:ring-0" placeholder="Masukkan nama..." required>
+                                </div>
+                                <div class="mb-6">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">Token Akses</label>
+                                    <input type="password" id="loginToken" class="w-full px-4 py-3 rounded-lg bg-gray-100 border-transparent focus:border-blue-500 focus:bg-white focus:ring-0" placeholder="Masukkan token..." required>
+                                </div>
+                                <button onclick="doLoginSiswa()" id="btnSiswa" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-200">
+                                    Mulai Ujian
+                                </button>
+                            </div>
+
+                            <!-- Form Admin -->
+                            <div id="formAdmin" class="hidden">
+                                <div class="mb-6">
+                                    <label class="block text-gray-700 text-sm font-bold mb-2">Password Admin</label>
+                                    <input type="password" id="loginPassAdmin" class="w-full px-4 py-3 rounded-lg bg-gray-100 border-transparent focus:border-blue-500 focus:bg-white focus:ring-0" placeholder="Password...">
+                                </div>
+                                <button onclick="doLoginAdmin()" id="btnAdmin" class="w-full bg-gray-800 hover:bg-gray-900 text-white font-bold py-3 px-4 rounded-lg transition duration-200">
+                                    Masuk Dashboard
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app').innerHTML = html;
+        }
+
+        function switchLoginTab(tab) {
+            if(tab === 'siswa') {
+                document.getElementById('tabSiswa').className = "w-1/2 py-3 text-center border-b-2 border-blue-600 font-bold text-blue-600";
+                document.getElementById('tabAdmin').className = "w-1/2 py-3 text-center border-b-2 border-transparent font-medium text-gray-500";
+                document.getElementById('formSiswa').classList.remove('hidden');
+                document.getElementById('formAdmin').classList.add('hidden');
+            } else {
+                document.getElementById('tabAdmin').className = "w-1/2 py-3 text-center border-b-2 border-blue-600 font-bold text-blue-600";
+                document.getElementById('tabSiswa').className = "w-1/2 py-3 text-center border-b-2 border-transparent font-medium text-gray-500";
+                document.getElementById('formAdmin').classList.remove('hidden');
+                document.getElementById('formSiswa').classList.add('hidden');
+            }
+        }
+
+        function renderStudentApp() {
+            state.view = 'student';
+            const html = `
+                <!-- Navbar -->
+                <nav class="bg-white shadow-md px-4 py-3 flex justify-between items-center z-10 relative shrink-0">
+                    <div class="flex flex-col">
+                        <span class="font-bold text-gray-800">${state.config.judul}</span>
+                        <span class="text-xs text-gray-500">${state.user.nama} | ${state.user.kelas}</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="bg-red-100 text-red-700 px-4 py-2 rounded-full font-bold flex items-center shadow-sm">
+                            <i class="fas fa-clock mr-2"></i> <span id="timerDisplay">00:00:00</span>
+                        </div>
+                        <button onclick="togglePanels()" class="md:hidden p-2 text-gray-600"><i class="fas fa-bars text-xl"></i></button>
+                    </div>
+                </nav>
+
+                <!-- 3 Panel Layout (Statis) -->
+                <div class="flex-grow flex flex-col md:flex-row overflow-hidden relative h-[calc(100vh-64px)]">
+                    
+                    <!-- Panel 1: Stimulus (Kiri) -->
+                    <div id="panelStimulus" class="w-full md:w-1/4 bg-white border-r border-gray-200 flex flex-col hidden md:flex h-full">
+                        <div class="p-4 border-b shadow-sm z-10 shrink-0 bg-gray-50">
+                            <h3 class="text-sm font-bold text-gray-600 uppercase tracking-wider"><i class="fas fa-book-open mr-2"></i> Informasi / Stimulus</h3>
+                        </div>
+                        <div id="stimulusContent" class="p-4 overflow-y-auto flex-grow text-gray-700 text-sm leading-relaxed prose"></div>
+                    </div>
+
+                    <!-- Panel 2: Soal (Tengah) -->
+                    <div class="w-full md:w-1/2 bg-gray-100 flex flex-col relative h-full" id="panelSoal">
+                        <!-- Area Konten Soal (Bisa di-scroll) -->
+                        <div class="p-4 md:p-6 overflow-y-auto flex-grow h-0 hide-scroll">
+                            <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 min-h-full flex flex-col">
+                                <div class="flex justify-between items-center mb-4 pb-4 border-b shrink-0">
+                                    <span class="font-bold text-lg text-gray-800" id="qNumber">Soal No. 1</span>
+                                    <span class="text-xs bg-blue-100 text-blue-800 py-1 px-3 rounded-full font-semibold" id="qBobot">Bobot: 10</span>
+                                </div>
+                                
+                                <div id="qText" class="text-gray-800 mb-4 text-lg"></div>
+                                <img id="qImage" src="" alt="Gambar Soal" class="max-w-full h-auto rounded-lg mb-6 hidden border">
+                                
+                                <div id="qOptions" class="flex flex-col gap-3 flex-grow">
+                                    <!-- Options injected here -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Navigasi Bawah (Posisi Terkunci) -->
+                        <div class="p-4 bg-white border-t border-gray-200 flex justify-between gap-2 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                            <button onclick="navQ(-1)" class="px-4 py-3 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-medium flex-1 md:flex-none flex items-center justify-center transition-colors"><i class="fas fa-chevron-left md:mr-2"></i><span class="hidden md:inline">Sebelumnya</span></button>
+                            <button onclick="toggleDoubt()" id="btnRagu" class="px-4 py-3 bg-yellow-100 text-yellow-700 border border-yellow-400 rounded-lg hover:bg-yellow-200 font-medium flex-1 flex items-center justify-center transition-colors"><i class="fas fa-star mr-2"></i>Ragu-Ragu</button>
+                            <button onclick="navQ(1)" class="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium flex-1 md:flex-none flex items-center justify-center transition-colors"><span class="hidden md:inline">Selanjutnya</span><i class="fas fa-chevron-right md:ml-2"></i></button>
+                        </div>
+                    </div>
+
+                    <!-- Panel 3: Navigasi (Kanan) -->
+                    <div id="panelNav" class="w-full md:w-1/4 bg-white border-l border-gray-200 flex flex-col hidden md:flex absolute md:relative inset-0 z-20 h-full">
+                        <div class="p-4 border-b flex justify-between items-center md:hidden shrink-0 bg-gray-50">
+                            <h3 class="font-bold text-gray-700"><i class="fas fa-th mr-2"></i> Daftar Soal</h3>
+                            <button onclick="togglePanels()" class="p-2 text-gray-500 hover:text-red-500"><i class="fas fa-times text-xl"></i></button>
+                        </div>
+                        <div class="p-4 border-b shrink-0 hidden md:block bg-gray-50">
+                            <h3 class="text-sm font-bold text-gray-600 uppercase tracking-wider"><i class="fas fa-th mr-2"></i> Navigasi Soal</h3>
+                        </div>
+                        
+                        <div class="p-4 overflow-y-auto flex-grow hide-scroll">
+                            <div id="qGrid" class="grid grid-cols-5 gap-2 mb-6">
+                                <!-- Grid injected here -->
+                            </div>
+                        </div>
+
+                        <div class="p-4 mt-auto border-t bg-gray-50 shrink-0">
+                            <div class="flex flex-wrap gap-2 text-xs mb-4 text-gray-600">
+                                <div class="flex items-center"><div class="w-3 h-3 bg-blue-500 rounded-sm mr-1"></div> Dijawab</div>
+                                <div class="flex items-center"><div class="w-3 h-3 bg-yellow-400 rounded-sm mr-1"></div> Ragu</div>
+                                <div class="flex items-center"><div class="w-3 h-3 bg-white rounded-sm mr-1 border border-gray-300"></div> Kosong</div>
+                            </div>
+                            <button onclick="confirmSubmit()" class="w-full py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg shadow-lg flex justify-center items-center transition-colors">
+                                <i class="fas fa-paper-plane mr-2"></i> Selesai & Kirim
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.getElementById('app').innerHTML = html;
+            loadQuestion(0);
+            renderGrid();
+        }
+
+        function renderAdminDashboard() {
+            state.view = 'admin';
+            const html = `
+                <nav class="bg-gray-800 text-white shadow-md px-6 py-4 flex justify-between items-center">
+                    <div class="font-bold text-xl"><i class="fas fa-shield-alt mr-2"></i> Admin Panel</div>
+                    <button onclick="renderLogin()" class="bg-red-500 hover:bg-red-600 px-4 py-2 rounded text-sm"><i class="fas fa-sign-out-alt mr-2"></i>Logout</button>
+                </nav>
+                <div class="flex flex-grow h-[calc(100vh-68px)] overflow-hidden">
+                    <!-- Sidebar -->
+                    <div class="w-64 bg-gray-900 text-gray-300 flex flex-col">
+                        <button onclick="switchAdminTab('input')" id="tabMenuInput" class="p-4 text-left border-l-4 border-blue-500 bg-gray-800 text-white"><i class="fas fa-edit mr-3"></i>Input Soal</button>
+                        <button onclick="switchAdminTab('rekap')" id="tabMenuRekap" class="p-4 text-left border-l-4 border-transparent hover:bg-gray-800 hover:text-white"><i class="fas fa-table mr-3"></i>Rekap Nilai</button>
+                    </div>
+
+                    <!-- Content Area -->
+                    <div class="flex-grow bg-gray-100 overflow-y-auto p-6" id="adminContent">
+                        <!-- Input View -->
+                        <div id="adminInputView" class="flex flex-col xl:flex-row gap-6">
+                            <div class="xl:w-1/2 bg-white rounded-xl shadow p-6">
+                                <h2 class="text-lg font-bold mb-4 border-b pb-2">Form Tambah Soal</h2>
+                                <div class="grid grid-cols-2 gap-4 mb-4">
+                                    <div><label class="text-xs font-bold text-gray-600">Nomor Soal</label><input type="number" id="inpNo" class="w-full border rounded p-2 text-sm mt-1" value="1"></div>
+                                    <div><label class="text-xs font-bold text-gray-600">Jenis Soal</label><select id="inpJenis" class="w-full border rounded p-2 text-sm mt-1"><option value="PG">Pilihan Ganda</option></select></div>
+                                    <div><label class="text-xs font-bold text-gray-600">Bobot</label><input type="number" id="inpBobot" class="w-full border rounded p-2 text-sm mt-1" value="10"></div>
+                                    <div><label class="text-xs font-bold text-gray-600">Kunci</label><select id="inpKunci" class="w-full border rounded p-2 text-sm mt-1"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+                                </div>
+                                <div class="mb-4">
+                                    <label class="text-xs font-bold text-gray-600">Teks Stimulus (Opsional)</label>
+                                    <textarea id="inpStimulus" oninput="updatePreview()" class="w-full border rounded p-2 text-sm mt-1 h-20"></textarea>
+                                </div>
+                                <div class="mb-4">
+                                    <label class="text-xs font-bold text-gray-600">Pertanyaan</label>
+                                    <textarea id="inpSoal" oninput="updatePreview()" class="w-full border rounded p-2 text-sm mt-1 h-24"></textarea>
+                                </div>
+                                <div class="grid gap-3 mb-6">
+                                    <input type="text" id="inpA" oninput="updatePreview()" placeholder="Pilihan A" class="w-full border rounded p-2 text-sm">
+                                    <input type="text" id="inpB" oninput="updatePreview()" placeholder="Pilihan B" class="w-full border rounded p-2 text-sm">
+                                    <input type="text" id="inpC" oninput="updatePreview()" placeholder="Pilihan C" class="w-full border rounded p-2 text-sm">
+                                    <input type="text" id="inpD" oninput="updatePreview()" placeholder="Pilihan D" class="w-full border rounded p-2 text-sm">
+                                </div>
+                                <button onclick="simpanSoal()" class="w-full bg-blue-600 text-white py-2 rounded shadow hover:bg-blue-700">Simpan ke Database</button>
+                            </div>
+                            
+                            <div class="xl:w-1/2 bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-6 relative">
+                                <span class="absolute top-0 right-0 bg-gray-300 text-gray-600 text-xs px-2 py-1 rounded-bl-lg">Live Preview</span>
+                                <div class="bg-white rounded-lg shadow-sm border p-6 mt-4">
+                                    <div id="prevStimulus" class="text-sm text-gray-600 mb-4 border-b pb-4 hidden"></div>
+                                    <div id="prevSoal" class="text-gray-800 text-lg mb-4 font-medium">[Pertanyaan akan muncul di sini]</div>
+                                    <div class="flex flex-col gap-2">
+                                        <div class="border rounded p-3 text-sm text-gray-700 bg-gray-50 flex gap-3"><span class="font-bold">A.</span><span id="prevA"></span></div>
+                                        <div class="border rounded p-3 text-sm text-gray-700 bg-gray-50 flex gap-3"><span class="font-bold">B.</span><span id="prevB"></span></div>
+                                        <div class="border rounded p-3 text-sm text-gray-700 bg-gray-50 flex gap-3"><span class="font-bold">C.</span><span id="prevC"></span></div>
+                                        <div class="border rounded p-3 text-sm text-gray-700 bg-gray-50 flex gap-3"><span class="font-bold">D.</span><span id="prevD"></span></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Rekap View -->
+                        <div id="adminRekapView" class="hidden">
+                            <div class="bg-white rounded-xl shadow overflow-hidden">
+                                <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                                    <h2 class="font-bold text-gray-700">Rekapitulasi Hasil Ujian</h2>
+                                    <button onclick="loadRekap()" class="bg-blue-100 text-blue-700 px-3 py-1 rounded text-sm hover:bg-blue-200"><i class="fas fa-sync-alt mr-1"></i>Refresh</button>
+                                </div>
+                                <div class="overflow-x-auto">
+                                    <table class="w-full text-sm text-left text-gray-500">
+                                        <thead class="text-xs text-gray-700 uppercase bg-gray-100">
+                                            <tr>
+                                                <th class="px-6 py-3">Waktu</th>
+                                                <th class="px-6 py-3">Nama</th>
+                                                <th class="px-6 py-3">Kelas</th>
+                                                <th class="px-6 py-3 text-center">Nilai Akhir</th>
+                                                <th class="px-6 py-3 text-center">B/S</th>
+                                                <th class="px-6 py-3 text-center">Pelanggaran</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rekapTableBody">
+                                            <tr><td colspan="6" class="px-6 py-4 text-center">Klik Refresh untuk memuat data.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            `;
+            document.getElementById('app').innerHTML = html;
+            loadRekap();
+        }
+
+        // ==========================================
+        // CONTROLLERS & LOGIC
+        // ==========================================
+        function doLoginSiswa() {
+            const nama = document.getElementById('loginNama').value;
+            const token = document.getElementById('loginToken').value;
+            
+            if(!nama || !token) {
+                showModal("Error", "Nama dan Token harus diisi!", "error");
+                return;
+            }
+
+            const btn = document.getElementById('btnSiswa');
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifikasi...';
+            btn.disabled = true;
+
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) {
+                    state.user = { nama: res.nama, kelas: res.kelas };
+                    fetchQuestions();
+                } else {
+                    showModal("Login Gagal", res.message, "error");
+                    btn.innerHTML = 'Mulai Ujian';
+                    btn.disabled = false;
+                }
+            }).verifyStudentLogin(nama, token);
+        }
+
+        function doLoginAdmin() {
+            const pass = document.getElementById('loginPassAdmin').value;
+            google.script.run.withSuccessHandler(res => {
+                if(res.success) {
+                    renderAdminDashboard();
+                } else {
+                    showModal("Akses Ditolak", res.message, "error");
+                }
+            }).verifyAdminLogin(pass);
+        }
+
+        function fetchQuestions() {
+            google.script.run.withSuccessHandler(res => {
+                if(res && res.length > 0) {
+                    state.questions = res;
+                    // Try load local storage
+                    const saved = localStorage.getItem(`cbt_${state.user.nama}_ans`);
+                    if(saved) {
+                        try { state.answers = JSON.parse(saved); } catch(e){}
+                    }
+                    renderStudentApp();
+                    startTimer();
+                } else {
+                    showModal("Error", "Tidak ada soal tersedia di database.", "error");
+                    document.getElementById('btnSiswa').innerHTML = 'Mulai Ujian';
+                    document.getElementById('btnSiswa').disabled = false;
+                }
+            }).getQuestionsForStudent();
+        }
+
+        function startTimer() {
+            // Check localstorage for remaining time
+            const savedTime = localStorage.getItem(`cbt_${state.user.nama}_time`);
+            let duration = state.config.durasi_menit * 60;
+            
+            if (savedTime && !isNaN(savedTime)) {
+                duration = parseInt(savedTime);
+            }
+            
+            state.timer = duration;
+            updateTimerDisplay();
+
+            state.timerInterval = setInterval(() => {
+                state.timer--;
+                updateTimerDisplay();
+                
+                // Save time every 5 secs
+                if(state.timer % 5 === 0) localStorage.setItem(`cbt_${state.user.nama}_time`, state.timer);
+
+                if(state.timer <= 0) {
+                    clearInterval(state.timerInterval);
+                    showModal("Waktu Habis!", "Waktu ujian Anda telah habis. Jawaban akan dikirim otomatis.", "warning", () => {
+                        processSubmit();
+                    });
+                }
+            }, 1000);
+        }
+
+        function updateTimerDisplay() {
+            const h = Math.floor(state.timer / 3600);
+            const m = Math.floor((state.timer % 3600) / 60);
+            const s = state.timer % 60;
+            document.getElementById('timerDisplay').innerText = 
+                `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+
+        // ==========================================
+        // STUDENT INTERACTION LOGIC
+        // ==========================================
+        function loadQuestion(idx) {
+            if(idx < 0 || idx >= state.questions.length) return;
+            state.currentQIdx = idx;
+            const q = state.questions[idx];
+
+            // Render Stimulus (Statis Layout)
+            const cStimulus = document.getElementById('stimulusContent');
+            if(q.Teks_Stimulus || q.Gambar_Stimulus_URL) {
+                cStimulus.innerHTML = (q.Gambar_Stimulus_URL ? `<img src="${q.Gambar_Stimulus_URL}" class="mb-3 w-full rounded shadow-sm border">` : '') + 
+                                      (q.Teks_Stimulus ? `<p>${q.Teks_Stimulus}</p>` : '');
+            } else {
+                cStimulus.innerHTML = `<div class="flex flex-col items-center justify-center h-48 text-gray-400 mt-10"><i class="fas fa-file-alt text-4xl mb-3 opacity-30"></i><p class="text-sm italic text-center">Tidak ada stimulus/informasi tambahan untuk soal ini.</p></div>`;
+            }
+
+            // Render Soal
+            document.getElementById('qNumber').innerText = `Soal No. ${q.Nomor_Soal}`;
+            document.getElementById('qBobot').innerText = `Bobot: ${q.Bobot}`;
+            document.getElementById('qText').innerHTML = q.Teks_Soal;
+            
+            const imgEl = document.getElementById('qImage');
+            if(q.Gambar_Soal_URL) {
+                imgEl.src = q.Gambar_Soal_URL;
+                imgEl.classList.remove('hidden');
+            } else {
+                imgEl.classList.add('hidden');
+            }
+
+            // Render Pilihan
+            const optsContainer = document.getElementById('qOptions');
+            optsContainer.innerHTML = '';
+            ['A', 'B', 'C', 'D'].forEach(opt => {
+                const text = q[`Pilihan_${opt}`];
+                if(text) {
+                    const isChecked = state.answers[q.ID_Soal] === opt;
+                    optsContainer.innerHTML += `
+                        <div class="relative">
+                            <input type="radio" name="opsi" id="opt${opt}" value="${opt}" class="peer hidden radio-custom" ${isChecked ? 'checked' : ''} onchange="saveAnswer('${q.ID_Soal}', '${opt}')">
+                            <label for="opt${opt}" class="flex items-start gap-4 p-4 border-2 border-gray-200 rounded-xl cursor-pointer transition-all hover:bg-gray-50 text-gray-700">
+                                <div class="w-7 h-7 rounded-full border-2 border-gray-300 flex items-center justify-center font-bold text-sm shrink-0 peer-checked:bg-blue-500 peer-checked:text-white peer-checked:border-blue-500 transition-colors label-circle">${opt}</div>
+                                <div class="pt-0.5 leading-tight">${text}</div>
+                            </label>
+                        </div>
+                    `;
+                }
+            });
+
+            // Update UI Button Ragu
+            const btnRagu = document.getElementById('btnRagu');
+            if(state.doubts[q.ID_Soal]) {
+                btnRagu.classList.remove('bg-yellow-100', 'text-yellow-700');
+                btnRagu.classList.add('bg-yellow-500', 'text-white');
+            } else {
+                btnRagu.classList.add('bg-yellow-100', 'text-yellow-700');
+                btnRagu.classList.remove('bg-yellow-500', 'text-white');
+            }
+
+            renderGrid();
+        }
+
+        function saveAnswer(qId, val) {
+            state.answers[qId] = val;
+            localStorage.setItem(`cbt_${state.user.nama}_ans`, JSON.stringify(state.answers));
+            
+            // Highlight selected visual dynamically
+            document.querySelectorAll('.label-circle').forEach(el => {
+                el.classList.remove('bg-blue-500', 'text-white', 'border-blue-500');
+            });
+            const selectedRadio = document.querySelector('input[name="opsi"]:checked');
+            if(selectedRadio) {
+                const circle = selectedRadio.nextElementSibling.querySelector('.label-circle');
+                circle.classList.add('bg-blue-500', 'text-white', 'border-blue-500');
+            }
+
+            renderGrid();
+        }
+
+        function toggleDoubt() {
+            const q = state.questions[state.currentQIdx];
+            state.doubts[q.ID_Soal] = !state.doubts[q.ID_Soal];
+            loadQuestion(state.currentQIdx); // refresh btn
+        }
+
+        function navQ(dir) {
+            let next = state.currentQIdx + dir;
+            if(next >= 0 && next < state.questions.length) loadQuestion(next);
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById('qGrid');
+            grid.innerHTML = '';
+            state.questions.forEach((q, idx) => {
+                let bgClass = "bg-gray-100 text-gray-600 border-gray-300"; // Belum
+                if (state.answers[q.ID_Soal]) bgClass = "bg-blue-500 text-white border-blue-600"; // Dijawab
+                if (state.doubts[q.ID_Soal]) bgClass = "bg-yellow-400 text-white border-yellow-500"; // Ragu
+
+                let activeRing = idx === state.currentQIdx ? "ring-2 ring-offset-2 ring-blue-800 font-bold scale-110" : "";
+
+                grid.innerHTML += `
+                    <button onclick="loadQuestion(${idx})" class="w-10 h-10 flex items-center justify-center rounded border shadow-sm text-sm transition-all ${bgClass} ${activeRing}">
+                        ${q.Nomor_Soal}
+                    </button>
+                `;
+            });
+        }
+
+        function togglePanels() {
+            const nav = document.getElementById('panelNav');
+            if(nav.classList.contains('hidden')) {
+                nav.classList.remove('hidden');
+            } else {
+                nav.classList.add('hidden');
+            }
+        }
+
+        // ==========================================
+        // SUBMIT EXAM
+        // ==========================================
+        function confirmSubmit() {
+            const total = state.questions.length;
+            const answered = Object.keys(state.answers).length;
+            const msg = answered < total ? 
+                `Anda baru menjawab ${answered} dari ${total} soal. Yakin ingin mengirim sekarang?` : 
+                `Anda sudah menjawab semua soal. Yakin ingin menyelesaikan ujian?`;
+            
+            showModal("Konfirmasi", msg, "warning", () => {
+                processSubmit();
+            });
+        }
+
+        function processSubmit() {
+            clearInterval(state.timerInterval);
+            
+            // Show loading overlay
+            document.getElementById('app').innerHTML = `
+                <div class="flex-grow flex flex-col items-center justify-center bg-white h-screen">
+                    <i class="fas fa-circle-notch fa-spin text-6xl text-blue-500 mb-4"></i>
+                    <h2 class="text-xl font-bold text-gray-700">Memproses Nilai...</h2>
+                    <p class="text-gray-500 mt-2">Mohon jangan tutup jendela ini.</p>
+                </div>
+            `;
+
+            google.script.run.withSuccessHandler(res => {
+                // Clear local storage
+                localStorage.removeItem(`cbt_${state.user.nama}_ans`);
+                localStorage.removeItem(`cbt_${state.user.nama}_time`);
+                
+                // Show Result Screen
+                state.view = 'result';
+                document.getElementById('app').innerHTML = `
+                    <div class="flex-grow flex items-center justify-center bg-gray-100 p-4">
+                        <div class="bg-white p-8 rounded-2xl shadow-xl max-w-lg w-full text-center">
+                            <div class="w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center text-5xl mx-auto mb-6">
+                                <i class="fas fa-check"></i>
+                            </div>
+                            <h2 class="text-2xl font-bold text-gray-800 mb-2">Ujian Selesai!</h2>
+                            <p class="text-gray-600 mb-6">Terima kasih ${state.user.nama}, jawaban Anda telah tersimpan.</p>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-8">
+                                <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                                    <p class="text-xs text-blue-600 font-bold uppercase">Nilai Akhir</p>
+                                    <p class="text-3xl font-black text-blue-800">${res.nilaiAkhir}</p>
+                                </div>
+                                <div class="bg-gray-50 p-4 rounded-xl border flex flex-col justify-center">
+                                    <p class="text-sm font-medium text-gray-600">Benar: <span class="text-green-600 font-bold">${res.benar}</span></p>
+                                    <p class="text-sm font-medium text-gray-600">Salah: <span class="text-red-500 font-bold">${res.salah}</span></p>
+                                </div>
+                            </div>
+                            
+                            <button onclick="window.location.reload()" class="bg-gray-800 text-white px-6 py-3 rounded-lg font-bold hover:bg-gray-900 w-full shadow-lg">Kembali ke Beranda</button>
+                        </div>
+                    </div>
+                `;
+            }).submitStudentExam(state.user, state.answers, state.violations);
+        }
+
+
+        // ==========================================
+        // ADMIN LOGIC
+        // ==========================================
+        function switchAdminTab(tab) {
+            const vInput = document.getElementById('adminInputView');
+            const vRekap = document.getElementById('adminRekapView');
+            const mInput = document.getElementById('tabMenuInput');
+            const mRekap = document.getElementById('tabMenuRekap');
+
+            if(tab === 'input') {
+                vInput.classList.remove('hidden'); vRekap.classList.add('hidden');
+                mInput.className = "p-4 text-left border-l-4 border-blue-500 bg-gray-800 text-white";
+                mRekap.className = "p-4 text-left border-l-4 border-transparent hover:bg-gray-800 hover:text-white";
+            } else {
+                vInput.classList.add('hidden'); vRekap.classList.remove('hidden');
+                mRekap.className = "p-4 text-left border-l-4 border-blue-500 bg-gray-800 text-white";
+                mInput.className = "p-4 text-left border-l-4 border-transparent hover:bg-gray-800 hover:text-white";
+                loadRekap();
+            }
+        }
+
+        function updatePreview() {
+            const stim = document.getElementById('inpStimulus').value;
+            const pStim = document.getElementById('prevStimulus');
+            if(stim) { pStim.innerHTML = stim; pStim.classList.remove('hidden'); }
+            else { pStim.classList.add('hidden'); }
+
+            document.getElementById('prevSoal').innerText = document.getElementById('inpSoal').value || "[Pertanyaan akan muncul di sini]";
+            document.getElementById('prevA').innerText = document.getElementById('inpA').value;
+            document.getElementById('prevB').innerText = document.getElementById('inpB').value;
+            document.getElementById('prevC').innerText = document.getElementById('inpC').value;
+            document.getElementById('prevD').innerText = document.getElementById('inpD').value;
+        }
+
+        function simpanSoal() {
+            const qData = {
+                Nomor_Soal: document.getElementById('inpNo').value,
+                Jenis_Soal: document.getElementById('inpJenis').value,
+                Teks_Stimulus: document.getElementById('inpStimulus').value,
+                Gambar_Stimulus_URL: "", // Placeholder if future implementation needed
+                Teks_Soal: document.getElementById('inpSoal').value,
+                Gambar_Soal_URL: "",
+                Pilihan_A: document.getElementById('inpA').value,
+                Pilihan_B: document.getElementById('inpB').value,
+                Pilihan_C: document.getElementById('inpC').value,
+                Pilihan_D: document.getElementById('inpD').value,
+                Kunci_Jawaban: document.getElementById('inpKunci').value,
+                Pembahasan: "", // Opsional admin input form simplified
+                Bobot: document.getElementById('inpBobot').value
+            };
+
+            if(!qData.Teks_Soal || !qData.Pilihan_A || !qData.Pilihan_B) {
+                showModal("Error", "Soal dan minimal pilihan A & B harus diisi!", "error");
+                return;
+            }
+
+            google.script.run.withSuccessHandler(res => {
+                showModal("Sukses", res.message, "success");
+                document.getElementById('inpNo').value = parseInt(qData.Nomor_Soal) + 1;
+                document.getElementById('inpSoal').value = "";
+                document.getElementById('inpA').value = "";
+                document.getElementById('inpB').value = "";
+                document.getElementById('inpC').value = "";
+                document.getElementById('inpD').value = "";
+                updatePreview();
+            }).saveSingleQuestion(qData);
+        }
+
+        function loadRekap() {
+            document.getElementById('rekapTableBody').innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center"><i class="fas fa-spinner fa-spin mr-2"></i>Memuat data...</td></tr>';
+            
+            google.script.run.withSuccessHandler(data => {
+                const tbody = document.getElementById('rekapTableBody');
+                if(!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="px-6 py-4 text-center">Belum ada data hasil ujian.</td></tr>';
+                    return;
+                }
+                
+                let html = '';
+                data.forEach(r => {
+                    const date = new Date(r.waktu).toLocaleString('id-ID');
+                    html += `
+                        <tr class="bg-white border-b hover:bg-gray-50">
+                            <td class="px-6 py-4">${date}</td>
+                            <td class="px-6 py-4 font-medium text-gray-900">${r.nama}</td>
+                            <td class="px-6 py-4">${r.kelas}</td>
+                            <td class="px-6 py-4 text-center font-bold text-blue-600">${r.nilai}</td>
+                            <td class="px-6 py-4 text-center">${r.benar} / ${r.salah}</td>
+                            <td class="px-6 py-4 text-center"><span class="px-2 py-1 rounded text-xs font-bold ${r.pelanggaran > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}">${r.pelanggaran}</span></td>
+                        </tr>
+                    `;
+                });
+                tbody.innerHTML = html;
+            }).getExamResultsForAdmin();
+        }
+
+        // ==========================================
+        // CUSTOM MODAL (REPLACEMENT FOR ALERT)
+        // ==========================================
+        function showModal(title, msg, type = 'info', callback = null) {
+            const modal = document.getElementById('globalModal');
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalMsg').innerText = msg;
+            
+            const icon = document.getElementById('modalIcon');
+            if(type === 'error') icon.innerHTML = '<i class="fas fa-times-circle text-red-500"></i>';
+            else if(type === 'warning') icon.innerHTML = '<i class="fas fa-exclamation-triangle text-yellow-500"></i>';
+            else if(type === 'success') icon.innerHTML = '<i class="fas fa-check-circle text-green-500"></i>';
+            else icon.innerHTML = '<i class="fas fa-info-circle text-blue-500"></i>';
+
+            const btn = document.getElementById('modalBtnOk');
+            btn.onclick = () => {
+                modal.classList.add('hidden');
+                if(callback) callback();
+            };
+
+            modal.classList.remove('hidden');
+        }
+
+    </script>
+</body>
+</html>
